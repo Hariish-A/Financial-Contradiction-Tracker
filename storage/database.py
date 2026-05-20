@@ -223,6 +223,15 @@ def load_embedding(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32)
 
 
+def update_statement_embedding(statement_id: int, embedding: np.ndarray) -> None:
+    emb_blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
+    with get_connection() as conn:
+        conn.execute(
+            "UPDATE statements SET embedding=? WHERE id=?",
+            (emb_blob, statement_id),
+        )
+
+
 def get_statements_for_executive(executive_id: int):
     with get_connection() as conn:
         return conn.execute(

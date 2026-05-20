@@ -73,7 +73,7 @@ TARGET_QUARTERS = [
 # Model settings (used from Week 2 onward)
 # ──────────────────────────────────────────────────────────────────
 FINBERT_MODEL   = "ProsusAI/finbert"
-EMBEDDING_MODEL = "nickmuchi/finbert-tone-finetuned-finance-topic-classification"
+EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 NLI_MODEL       = "cross-encoder/nli-deberta-v3-base"
 SPACY_MODEL     = "en_core_web_sm"
 

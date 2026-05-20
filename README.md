@@ -15,8 +15,8 @@ DATA INGESTION → EXTRACTION → CONTRADICTION ENGINE → CREDIBILITY SCORER �
 | Layer | Module | Status |
 |---|---|---|
 | 1 — Data Ingestion | `ingestion/` | ✅ Week 1 |
-| 2 — Extraction | `extraction/` | 🔜 Week 2 |
-| 3 — Contradiction Engine | `contradiction/` | 🔜 Week 3–4 |
+| 2 — Extraction | `extraction/` | ✅ Week 2 |
+| 3 — Contradiction Engine | `contradiction/` | 🚧 Week 3–4 (Milestone 3 ✅) |
 | 4 — Credibility Scorer | `credibility/` | 🔜 Week 5 |
 | 5 — Dashboard | `dashboard/` | 🔜 Week 6 |
 
@@ -52,6 +52,8 @@ financial-contradiction-tracker/
 ├── logs/                       # Runtime logs (git-ignored)
 ├── config.py                   # All constants, company list, thresholds
 ├── run_ingestion.py            # CLI entry point for Week 1
+├── run_extraction.py           # CLI entry point for Week 2
+├── run_contradiction.py        # CLI entry point for Week 3 (Milestone 3)
 └── requirements.txt
 ```
 
@@ -123,7 +125,7 @@ Target quarters: **Q1FY23 → Q4FY24** (8 quarters per company)
 |---|---|---|
 | 1 | Scraper working, 5 companies, 8 quarters of transcripts | ✅ |
 | 2 | Speaker diarization + statement extractor + classifier | ✅ |
-| 3 | FAISS index + NLI contradiction scorer | 🔜 |
+| 3 | FAISS index + NLI contradiction scorer | ✅ |
 | 4 | Soft contradiction detector + hedge escalation | 🔜 |
 | 5 | Credibility scorer tracking 3 executives across 2 years | 🔜 |
 | 6 | Streamlit dashboard: timeline + scorecard + search + PDF export | 🔜 |
@@ -164,3 +166,25 @@ This step processes the raw transcript text. It diarizes the text by speaker, ex
 python run_extraction.py
 ```
 *(Tip: Use `python run_extraction.py --limit 2` to test the pipeline on a subset of transcripts)*
+
+### Week 3: Contradiction Engine Foundation
+This step computes vector embeddings for all statements in the database and runs semantic similarity searches or NLI verification test cases.
+
+#### 1. Backfill Statement Embeddings
+Compute and store 768-dimensional embeddings for all extracted statements in the SQLite database:
+```powershell
+python run_contradiction.py --backfill
+```
+
+#### 2. Run Verification Test Cases
+Verify the NLI DeBERTa scorer on standard logical contradiction, sentiment flip, hedge escalation, and entailment pairs:
+```powershell
+python run_contradiction.py --test-cases
+```
+
+#### 3. Semantic Search Query
+Search an executive's statements semantically using their dynamically constructed FAISS index:
+```powershell
+python run_contradiction.py --exec-id <executive_id> --query "<query_text>"
+```
+*(Example: `python run_contradiction.py --exec-id 1 --query "growth"`)*
