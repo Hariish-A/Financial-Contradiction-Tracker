@@ -16,7 +16,7 @@ DATA INGESTION → EXTRACTION → CONTRADICTION ENGINE → CREDIBILITY SCORER �
 |---|---|---|
 | 1 — Data Ingestion | `ingestion/` | ✅ Week 1 |
 | 2 — Extraction | `extraction/` | ✅ Week 2 |
-| 3 — Contradiction Engine | `contradiction/` | 🚧 Week 3–4 (Milestone 3 ✅) |
+| 3 — Contradiction Engine | `contradiction/` | ✅ Week 3–4 (Milestones 3 & 4 ✅) |
 | 4 — Credibility Scorer | `credibility/` | 🔜 Week 5 |
 | 5 — Dashboard | `dashboard/` | 🔜 Week 6 |
 
@@ -36,10 +36,10 @@ financial-contradiction-tracker/
 │   ├── statement_extractor.py  # (Week 2) Sentence-level claim extraction
 │   └── classifier.py           # (Week 2) FinBERT guidance type classifier
 ├── contradiction/
-│   ├── embeddings.py           # (Week 3) FAISS index + FinancialBERT
+│   ├── embeddings.py           # (Week 3) FAISS index + all-mpnet-base-v2
 │   ├── nli_scorer.py           # (Week 3) DeBERTa hard contradiction
-│   ├── soft_detector.py        # (Week 4) Topic + sentiment + hedge scoring
-│   └── omission_detector.py    # (Week 4) Topic dropout across quarters
+│   ├── soft_detector.py        # (Week 4) ✅ Topic similarity + sentiment flip + hedge escalation
+│   └── omission_detector.py    # (Week 4) ✅ spaCy topic dropout across quarters
 ├── credibility/
 │   └── scorer.py               # (Week 5) Prediction vs actual tracker
 ├── storage/
@@ -53,7 +53,7 @@ financial-contradiction-tracker/
 ├── config.py                   # All constants, company list, thresholds
 ├── run_ingestion.py            # CLI entry point for Week 1
 ├── run_extraction.py           # CLI entry point for Week 2
-├── run_contradiction.py        # CLI entry point for Week 3 (Milestone 3)
+├── run_contradiction.py        # CLI entry point for Weeks 3 & 4 (Milestones 3 & 4)
 └── requirements.txt
 ```
 
@@ -126,7 +126,7 @@ Target quarters: **Q1FY23 → Q4FY24** (8 quarters per company)
 | 1 | Scraper working, 5 companies, 8 quarters of transcripts | ✅ |
 | 2 | Speaker diarization + statement extractor + classifier | ✅ |
 | 3 | FAISS index + NLI contradiction scorer | ✅ |
-| 4 | Soft contradiction detector + hedge escalation | 🔜 |
+| 4 | Soft contradiction detector + hedge escalation + omission detection | ✅ |
 | 5 | Credibility scorer tracking 3 executives across 2 years | 🔜 |
 | 6 | Streamlit dashboard: timeline + scorecard + search + PDF export | 🔜 |
 
@@ -188,3 +188,33 @@ Search an executive's statements semantically using their dynamically constructe
 python run_contradiction.py --exec-id <executive_id> --query "<query_text>"
 ```
 *(Example: `python run_contradiction.py --exec-id 1 --query "growth"`)*
+
+---
+
+### Week 4: Full Contradiction Detection Pipeline
+This step runs the complete Milestone 4 pipeline — scanning every executive's statements for HARD, SOFT, and OMISSION contradictions and storing all results in the `contradictions` table.
+
+#### 1. Run the Full Pipeline (All Executives)
+Scans all executives for all three contradiction types:
+```powershell
+python run_contradiction.py --run-pipeline
+```
+
+#### 2. Run Pipeline for a Single Executive (Faster — for Testing)
+```powershell
+python run_contradiction.py --run-pipeline --filter-exec <executive_id>
+```
+*(Example: `python run_contradiction.py --run-pipeline --filter-exec 1`)*
+
+#### 3. Inspect Detected Contradictions
+Verify results directly in the database:
+```powershell
+python -c "import sqlite3; conn = sqlite3.connect('data/tracker.db'); print(conn.execute('SELECT contradiction_type, COUNT(*) FROM contradictions GROUP BY contradiction_type').fetchall())"
+```
+
+#### What gets detected:
+| Type | Signal | Example |
+|---|---|---|
+| **HARD** | NLI contradiction prob > 0.5 | "18% growth" → "revised to 8%" |
+| **SOFT** | Topic sim + sentiment flip + hedge escalation > 0.6 | "confident margins" → "headwinds suppressing margins" |
+| **OMISSION** | Topic absent after 3+ consecutive quarters of mentions | "rural segment" discussed Q1–Q3, never mentioned in Q4 |
