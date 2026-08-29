@@ -57,6 +57,7 @@ from storage.database import (
     get_contradictions_for_executive,
     get_statement_count_for_executive,
     insert_prediction,
+    DB_PATH,
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -298,13 +299,17 @@ class CredibilityScorer:
       - Prediction accuracy      (verified predictions from predictions table)
     """
 
+    def __init__(self, db_path: Path = DB_PATH):
+        from storage.database import DB_PATH
+        self.db_path = db_path
+
     def score_executive(self, executive_id: int) -> dict:
         """
         Compute the credibility score for one executive.
         Returns a structured result dict.
         """
         # ── 1. Fetch executive metadata ───────────────────────────────────
-        conn = get_connection()
+        conn = get_connection(self.db_path)
         exec_row = conn.execute(
             """
             SELECT e.id, e.name, e.role, c.name AS company_name
@@ -325,19 +330,23 @@ class CredibilityScorer:
         company_name = exec_row["company_name"]
 
         # ── 2. Contradiction counts ───────────────────────────────────────
-        contradictions = get_contradictions_for_executive(executive_id)
+        contradictions = get_contradictions_for_executive(executive_id, db_path=self.db_path)
         hard_count = soft_count = omit_count = 0
         for row in contradictions:
             ct = (row["contradiction_type"] or "").upper()
+            r_dict = dict(row)
+            status = (r_dict.get("review_status") or "APPROVED").upper()
             if ct == "HARD":
-                hard_count += 1
+                # Only count APPROVED or LEGACY_APPROVED HARD contradictions
+                if status in ("APPROVED", "LEGACY_APPROVED"):
+                    hard_count += 1
             elif ct == "SOFT":
                 soft_count += 1
             elif ct == "OMISSION":
                 omit_count += 1
 
         # ── 3. Prediction accuracy (verified only) ────────────────────────
-        predictions   = get_predictions_for_executive(executive_id)
+        predictions   = get_predictions_for_executive(executive_id, db_path=self.db_path)
         verified_preds = [p for p in predictions if p["verified"] == 1 and p["actual_value"] is not None]
 
         dir_correct = dir_wrong = 0
@@ -402,7 +411,7 @@ class CredibilityScorer:
         else:
             tier = "HIGH RISK"
 
-        total_statements   = get_statement_count_for_executive(executive_id)
+        total_statements   = get_statement_count_for_executive(executive_id, db_path=self.db_path)
         total_contradictions = hard_count + soft_count + omit_count
 
         return {
@@ -431,7 +440,7 @@ class CredibilityScorer:
 
     def score_all(self) -> list:
         """Score all executives in the database. Returns list of result dicts."""
-        executives = get_all_executives()
+        executives = get_all_executives(db_path=self.db_path)
         results    = []
         for exec_row in executives:
             result = self.score_executive(exec_row["id"])

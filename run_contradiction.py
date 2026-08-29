@@ -45,11 +45,12 @@ from config import (
     SOFT_CONTRADICTION_THRESHOLD,
     TOPIC_SIMILARITY_THRESHOLD,
 )
-from storage.database import (
-    get_connection,
-    update_statement_embedding,
-    insert_contradiction,
-    get_contradictions,
+from contradiction.services import (
+    backfill_embeddings_service,
+    generate_candidate_pairs,
+    get_existing_pairs,
+    persist_contradiction_record,
+    run_executive_scan,
 )
 from contradiction.embeddings import compute_embeddings, StatementIndex
 from contradiction.nli_scorer import score_contradiction
@@ -63,33 +64,7 @@ from contradiction.omission_detector import detect_omissions
 
 def backfill_embeddings(batch_size: int = 128):
     """Fetch all statements without embeddings and compute them in batches."""
-    logger.info("Connecting to database to check for statements without embeddings...")
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, text FROM statements WHERE embedding IS NULL")
-    rows = cursor.fetchall()
-    conn.close()
-
-    if not rows:
-        logger.info("No statements with missing embeddings found. Everything is up-to-date!")
-        return
-
-    logger.info(f"Found {len(rows)} statements with missing embeddings. Starting backfill on CPU...")
-
-    for i in tqdm(range(0, len(rows), batch_size), desc="Backfilling Embeddings"):
-        batch = rows[i:i+batch_size]
-        batch_ids = [r[0] for r in batch]
-        batch_texts = [r[1] for r in batch]
-
-        try:
-            embeddings = compute_embeddings(batch_texts, batch_size=batch_size, show_progress=False)
-            for stmt_id, emb in zip(batch_ids, embeddings):
-                update_statement_embedding(stmt_id, emb)
-        except Exception as e:
-            logger.error(f"Error computing or saving embeddings for batch {i}-{i+batch_size}: {e}")
-            sys.exit(1)
-
-    logger.info("Embedding backfill completed successfully!")
+    backfill_embeddings_service(batch_size=batch_size)
 
 
 def run_test_cases():
@@ -356,6 +331,7 @@ def run_full_pipeline(exec_id_filter: int = None):
     backfill_embeddings()
 
     # Fetch executives
+    from storage.database import get_connection
     conn = get_connection()
     if exec_id_filter:
         executives = conn.execute(
@@ -374,32 +350,23 @@ def run_full_pipeline(exec_id_filter: int = None):
     logger.info(f"Found {len(executives)} executive(s) to scan.")
 
     # Load existing pairs once to avoid repeated DB queries
-    conn = get_connection()
-    existing_pairs = _get_existing_pairs(conn)
-    conn.close()
+    existing_pairs = get_existing_pairs()
 
-    # Step 2: HARD + SOFT detection per executive
-    logger.info("Step 2/3 — Scanning for HARD and SOFT contradictions...")
-    total_hard = total_soft = total_skipped = 0
+    # Step 2 & 3: HARD + SOFT + OMISSION detection per executive
+    logger.info("Step 2/3 — Scanning for HARD, SOFT, and OMISSION contradictions...")
+    total_hard = total_soft = total_omissions = total_skipped = 0
 
-    for exec_row in tqdm(executives, desc="Executives (HARD+SOFT)"):
+    for exec_row in tqdm(executives, desc="Scanning Executives"):
         exec_id   = exec_row["id"]
         exec_name = exec_row["name"]
         exec_role = exec_row["role"]
 
         logger.debug(f"  Scanning: {exec_name} ({exec_role}) [id={exec_id}]")
-        counts = _run_pipeline_for_executive(exec_id, exec_name, exec_role, existing_pairs)
-        total_hard    += counts["hard"]
-        total_soft    += counts["soft"]
-        total_skipped += counts["skipped_duplicates"]
-
-    # Step 3: OMISSION detection per executive
-    logger.info("Step 3/3 — Scanning for OMISSION contradictions...")
-    total_omissions = 0
-
-    for exec_row in tqdm(executives, desc="Executives (OMISSION)"):
-        omission_count = _run_omissions_for_executive(exec_row["id"], existing_pairs)
-        total_omissions += omission_count
+        counts = run_executive_scan(exec_id, existing_pairs=existing_pairs)
+        total_hard        += counts.get("hard", 0)
+        total_soft        += counts.get("soft", 0)
+        total_omissions   += counts.get("omissions", 0)
+        total_skipped     += counts.get("skipped_duplicates", 0)
 
     # Summary
     logger.info("\n" + "=" * 70)

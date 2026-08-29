@@ -24,6 +24,13 @@ duckdb>=0.10.0
 streamlit>=1.35.0
 plotly>=5.22.0
 
+# ── Orchestration & MCP ─────────────────────────────────────────────
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.0
+mcp>=2.1.0
+pydantic>=2.7.0
+pytest>=8.0.0
+
 # ── Utilities ───────────────────────────────────────────────────────
 pandas>=2.2.0
 numpy>=1.26.0

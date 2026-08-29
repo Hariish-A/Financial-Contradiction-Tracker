@@ -18,6 +18,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from storage.database import init_db
 from dashboard.data_fetcher import (
     fetch_all_credibility_scores,
     fetch_contradictions_df,
@@ -26,7 +27,13 @@ from dashboard.data_fetcher import (
     fetch_summary_stats,
     run_semantic_search,
     verify_prediction,
+    fetch_pending_reviews,
+    fetch_review_history,
+    submit_review_decision,
 )
+
+# Ensure database tables and migrations are initialized on dashboard launch
+init_db()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page Config
@@ -412,13 +419,14 @@ with k5:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4 Main Tabs
+# 5 Main Tabs
 # ─────────────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🏆  Executive Scorecard",
     "⚡  Contradiction Timeline",
     "🔍  Semantic Search",
     "✅  Prediction Verification",
+    "⚖️  Review Queue",
 ])
 
 
@@ -886,3 +894,112 @@ with tab4:
                 use_container_width=True,
                 height=350,
             )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# TAB 5: Review Queue
+# ═════════════════════════════════════════════════════════════════════════════
+with tab5:
+    st.markdown("### ⚖️ HARD Contradiction Review Queue")
+    st.markdown(
+        "<p style='color:#64748b;font-size:0.9rem;margin-top:-8px;margin-bottom:20px;'>"
+        "Human-in-the-loop review queue for candidate HARD contradictions. "
+        "Approval deducts 20 credibility points; rejection preserves executive credibility."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    pending_df = fetch_pending_reviews()
+    history_df = fetch_review_history()
+
+    if selected_exec_id is not None and not pending_df.empty and "executive_name" in pending_df.columns:
+        sel_name = exec_df[exec_df["id"] == selected_exec_id]["name"].iloc[0] if not exec_df.empty else ""
+        if sel_name:
+            pending_df = pending_df[pending_df["executive_name"] == sel_name]
+
+    r_col1, r_col2 = st.columns([1, 1])
+    with r_col1:
+        stat_card("Pending Reviews", len(pending_df), "⏳", color="#f59e0b")
+    with r_col2:
+        stat_card("History Records", len(history_df), "📜", color="#3b82f6")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if pending_df.empty:
+        st.success("🎉 No pending HARD contradiction candidates awaiting review!", icon="✅")
+    else:
+        st.markdown(f"#### ⏳ Candidates Awaiting Decision ({len(pending_df)})")
+
+        for _, item in pending_df.iterrows():
+            c_id = int(item["contradiction_id"])
+            thread_id = item.get("graph_thread_id", f"hard_{item['statement_a_id']}_{item['statement_b_id']}_v1_0")
+            nli_score = float(item.get("nli_score", 0.0))
+            llm_v = item.get("llm_verdict")
+            llm_c = item.get("llm_confidence")
+            llm_exp = item.get("llm_explanation")
+            src = item.get("decision_source", "NLI")
+
+            llm_info = ""
+            if llm_v:
+                conf_str = f"{float(llm_c)*100:.0f}%" if llm_c is not None else "N/A"
+                llm_info = f" | LLM Verdict: <strong style='color:#f59e0b;'>{str(llm_v).upper()}</strong> ({conf_str} confidence) — <em>{llm_exp}</em>"
+
+            st.markdown(f"""
+<div style="background:#1a2236;border:1px solid #334155;border-left:4px solid #f59e0b;border-radius:12px;padding:20px;margin-bottom:16px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <div>
+            <span style="color:#f1f5f9;font-weight:700;font-size:1.05rem;">{item.get('executive_name','?')} ({item.get('executive_role','?')})</span>
+            <span style="color:#94a3b8;font-size:0.85rem;margin-left:8px;">— {item.get('company_name','?')}</span>
+        </div>
+        <span style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;border-radius:20px;padding:3px 12px;font-size:0.75rem;font-weight:700;">
+            PENDING REVIEW (Source: {src})
+        </span>
+    </div>
+    
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px;">
+        <div style="background:#0d1526;border-radius:8px;padding:12px;border:1px solid #1e293b;">
+            <p style="color:#94a3b8;font-size:0.75rem;font-weight:600;margin:0 0 4px 0;">📅 STATEMENT A ({item.get('quarter_a','')} FY{item.get('year_a','')})</p>
+            <p style="color:#f1f5f9;font-size:0.88rem;margin:0;line-height:1.5;">"{item.get('statement_a_text','')}"</p>
+        </div>
+        <div style="background:#0d1526;border-radius:8px;padding:12px;border:1px solid #ef444444;">
+            <p style="color:#94a3b8;font-size:0.75rem;font-weight:600;margin:0 0 4px 0;">📅 STATEMENT B ({item.get('quarter_b','')} FY{item.get('year_b','')})</p>
+            <p style="color:#f1f5f9;font-size:0.88rem;margin:0;line-height:1.5;">"{item.get('statement_b_text','')}"</p>
+        </div>
+    </div>
+    
+    <div style="background:#0a0e1a;border-radius:8px;padding:10px 14px;border:1px solid #1e293b;margin-bottom:14px;font-size:0.82rem;color:#94a3b8;">
+        <strong>Evidence:</strong> NLI Contradiction Probability = <span style="color:#ef4444;font-weight:700;">{nli_score:.2f}</span>
+        {llm_info}
+        <br><span style="color:#64748b;">Expected Penalty on Approval: -20 points</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+            rc1, rc2, rc3, rc4 = st.columns([2, 2, 1, 1])
+            with rc1:
+                rev_name = st.text_input("Reviewer Name", value="Audit Manager", key=f"rev_name_{c_id}")
+            with rc2:
+                rev_notes = st.text_input("Review Notes", placeholder="Reason for decision…", key=f"rev_notes_{c_id}")
+            with rc3:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("✅ Confirm", key=f"confirm_{c_id}"):
+                    submit_review_decision(thread_id, c_id, approved=True, reviewer_name=rev_name, review_notes=rev_notes)
+                    st.success(f"Candidate #{c_id} APPROVED! Credibility penalty applied.", icon="✅")
+                    st.rerun()
+            with rc4:
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("❌ Reject", key=f"reject_{c_id}"):
+                    submit_review_decision(thread_id, c_id, approved=False, reviewer_name=rev_name, review_notes=rev_notes)
+                    st.info(f"Candidate #{c_id} REJECTED.", icon="ℹ️")
+                    st.rerun()
+
+            st.markdown("---")
+
+    # ── History ───────────────────────────────────────────────────────────────
+    if not history_df.empty:
+        st.markdown("#### 📜 Review Decision History")
+        h_cols = ["contradiction_id", "company_name", "executive_name", "review_status",
+                  "reviewer_name", "reviewed_at", "decision_source", "review_notes"]
+        h_cols = [c for c in h_cols if c in history_df.columns]
+        h_show = history_df[h_cols].copy()
+        st.dataframe(h_show, use_container_width=True, height=260)

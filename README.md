@@ -1,288 +1,168 @@
-# Financial Guidance Contradiction Tracker
+# ContraGuard — Financial Guidance Contradiction Tracker
 
-> **"Bloomberg tracks keyword changes. This system detects reasoning-level contradictions and scores whether management can be trusted."**
+ContraGuard is an AI-powered financial intelligence platform that analyzes Indian corporate earnings-call transcripts, detects contradictions in management guidance, verifies predictions against reported results, and scores executive credibility.
 
-A system that ingests Indian company earnings-call transcripts, extracts forward-guidance statements by CFOs/CEOs, detects hard and soft contradictions across quarters, and scores executive credibility by comparing predictions to actual outcomes — all surfaced in a Streamlit dashboard.
+## Problem Statement
 
----
+Investors and analysts rely on guidance from CEOs, CFOs, and other senior executives when evaluating a company. These statements are spread across quarterly transcripts and filings, making it difficult to determine whether management:
 
-## Hosted on Streamlit
+- reverses an earlier commitment or forecast;
+- changes its tone or strategic priorities over time;
+- stops discussing a previously important topic;
+- delivers the financial outcome it predicted; or
+- has a consistent and credible communication history.
 
-https://contraguard.streamlit.app/
+Keyword search alone cannot reliably identify these issues because contradictions are often semantic rather than literal. Automated model decisions can also produce false positives, so high-impact findings need traceable evidence and human validation before they affect an executive's credibility score.
 
----
+## Proposed Solution
 
-## System Architecture
+ContraGuard builds a longitudinal record of management guidance from BSE earnings-call documents and financial data from Screener.in. It extracts executive statements, compares related claims across quarters, and classifies inconsistencies as:
 
-```
-DATA INGESTION → EXTRACTION → CONTRADICTION ENGINE → CREDIBILITY SCORER → DASHBOARD
-```
+- **Hard contradictions:** Direct conflicts between two statements.
+- **Soft contradictions:** Changes in sentiment, confidence, hedging, or strategic direction.
+- **Omissions:** Topics emphasized in prior quarters but absent from the latest discussion.
+- **Prediction misses:** Quantitative guidance that does not match the subsequently reported result.
 
-| Layer | Module | Status |
-|---|---|---|
-| 1 — Data Ingestion | `ingestion/` | ✅ Week 1 |
-| 2 — Extraction | `extraction/` | ✅ Week 2 |
-| 3 — Contradiction Engine | `contradiction/` | ✅ Week 3–4 (Milestones 3 & 4 ✅) |
-| 4 — Credibility Scorer | `credibility/` | ✅ Week 5 |
-| 5 — Dashboard | `dashboard/` | ✅ Week 6 |
+A stateful LangGraph workflow combines DeBERTa-based natural language inference with an LLM judge. Clear cases are routed automatically, ambiguous cases receive additional evaluation, and potential hard contradictions pause for human approval or rejection. Only approved findings affect the executive's credibility score.
 
----
+The platform presents the resulting evidence, trends, predictions, and review tasks through a Streamlit dashboard. It also exposes nine typed MCP tools so compatible AI clients can query and operate the system through a standard interface.
 
-## Project Structure
+## Implementation
 
-```
-financial-contradiction-tracker/
-├── ingestion/
-│   ├── bse_scraper.py          # Scrapes BSE for transcript PDF links + downloads
-│   ├── pdf_extractor.py        # PyMuPDF text extraction + noise cleaning
-│   ├── screener_scraper.py     # Pulls structured quarterly financials from Screener.in
-│   └── orchestrator.py         # Wires all 3 scrapers for 5 companies × 8 quarters
-├── extraction/
-│   ├── diarizer.py             # (Week 2) Speaker attribution
-│   ├── statement_extractor.py  # (Week 2) Sentence-level claim extraction
-│   └── classifier.py           # (Week 2) FinBERT guidance type classifier
-├── contradiction/
-│   ├── embeddings.py           # (Week 3) FAISS index + all-mpnet-base-v2
-│   ├── nli_scorer.py           # (Week 3) DeBERTa hard contradiction
-│   ├── soft_detector.py        # (Week 4) ✅ Topic similarity + sentiment flip + hedge escalation
-│   └── omission_detector.py    # (Week 4) ✅ spaCy topic dropout across quarters
-├── credibility/
-│   └── scorer.py               # (Week 5) Prediction vs actual tracker
-├── storage/
-│   └── database.py             # SQLite schema + CRUD + DuckDB analytics bridge
-├── dashboard/
-│   └── app.py                  # (Week 6) Streamlit dashboard
-├── data/
-│   ├── transcripts/            # Raw PDFs per company per quarter (git-ignored)
-│   └── tracker.db              # SQLite database (git-ignored)
-├── logs/                       # Runtime logs (git-ignored)
-├── config.py                   # All constants, company list, thresholds
-├── run_ingestion.py            # CLI entry point for Week 1
-├── run_extraction.py           # CLI entry point for Week 2
-├── run_contradiction.py        # CLI entry point for Weeks 3 & 4 (Milestones 3 & 4)
-└── requirements.txt
+### Processing Workflow
+
+```mermaid
+flowchart LR
+    A[BSE filings and Screener data] --> B[PDF ingestion and transcript extraction]
+    B --> C[Speaker diarization and guidance classification]
+    C --> D[FAISS candidate retrieval]
+    D --> E[DeBERTa NLI scoring]
+    E --> F{Confidence routing}
+    F -->|High| G[Human review]
+    F -->|Ambiguous| H[LLM judge]
+    F -->|Low| I[Dismiss with audit trail]
+    H --> G
+    H --> I
+    G -->|Approve| J[Persist contradiction and update credibility]
+    G -->|Reject| I
+    K[Reported financial actuals] --> L[Prediction verification]
+    L --> J
+    J --> M[Streamlit dashboard and MCP tools]
 ```
 
----
+### Core Components
 
-## Quick Start
+1. **Data ingestion:** Downloads earnings-call PDFs and company data, extracts transcript text with PyMuPDF, and stores normalized records in SQLite.
+2. **Guidance extraction:** Uses spaCy, FinBERT models, and rule-based classifiers to identify speakers, guidance statements, topics, sentiment, confidence, and quantitative predictions.
+3. **Semantic retrieval:** Creates sentence embeddings and uses FAISS to find comparable statements from the same executive across reporting periods.
+4. **Contradiction detection:** Applies a DeBERTa NLI cross-encoder for hard contradictions and dedicated detectors for soft contradictions and omissions.
+5. **Stateful adjudication:** Uses LangGraph to route NLI results, call a provider-neutral LLM judge for uncertain pairs, interrupt for human review, and resume from persistent SQLite checkpoints.
+6. **Credibility scoring:** Calculates a 0–100 executive credibility score using approved contradictions and verified prediction outcomes.
+7. **Human review:** Displays statement pairs, model probabilities, LLM evidence, reviewer notes, and decision history in the Streamlit review queue.
+8. **MCP integration:** Provides bounded, parameterized tools for statements, contradictions, semantic search, credibility, reviews, and prediction verification over stdio.
 
-### 1. Install dependencies
-```bash
+### Data Scope
+
+The default configuration covers Reliance Industries, Infosys, HDFC Bank, Tata Consultancy Services, and Wipro across eight reporting periods from Q1 FY23 through Q4 FY24. Companies and quarters can be changed centrally in `config.py`.
+
+### Contradiction Routing
+
+- NLI contradiction probability **≥ 0.80:** route directly to human review.
+- Probability **≤ 0.20** with a non-contradiction verdict: dismiss and retain an audit record.
+- Scores between the thresholds: send to the LLM judge, then route the result to review or dismissal.
+- Model errors, unsupported providers, and uncertain verdicts: fail safely to human review.
+
+LangGraph checkpoints are stored in `data/langgraph_checkpoints.db`, allowing interrupted review workflows to survive process restarts. Application data is stored in `data/tracker.db`.
+
+### MCP Tools
+
+| Tool | Purpose |
+|---|---|
+| `query_statements` | Filter extracted guidance by company, executive, quarter, type, or sentiment. |
+| `get_contradictions` | Retrieve contradictions by company, executive, type, score, review status, or quarter. |
+| `get_credibility_score` | Return executive credibility scores and risk details. |
+| `find_similar_statements` | Search an executive's statements using FAISS semantic retrieval. |
+| `list_pending_reviews` | List hard-contradiction candidates awaiting a human decision. |
+| `get_prediction_status` | Retrieve quantitative predictions and their verification status. |
+| `approve_contradiction` | Approve a reviewed contradiction and apply its credibility penalty. |
+| `reject_contradiction` | Reject a candidate without changing the credibility score. |
+| `verify_prediction_actual` | Record an actual value and recompute the relevant credibility score. |
+
+### Setup and Execution
+
+```powershell
+# Create and activate a virtual environment, then install dependencies
+python -m venv venv
+.\venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
-```
 
-### 2. Initialise the database
-```bash
+# Initialize the database
 python run_ingestion.py --init-only
-```
 
-### 3. Run full ingestion (5 companies, 8 quarters)
-```bash
+# Ingest documents and extract guidance
 python run_ingestion.py
+python run_extraction.py
+
+# Build embeddings and run contradiction detection
+python run_contradiction.py --backfill
+python run_contradiction.py --run-pipeline
+
+# Extract predictions and calculate credibility scores
+python run_credibility.py --extract-predictions
+python run_credibility.py --score
+
+# Launch the dashboard
+streamlit run dashboard/app.py
 ```
 
-### 4. Single company (faster for testing)
-```bash
-# Infosys only, skip Screener.in
-python run_ingestion.py --company 500209 --skip-screener
+Run the MCP server with:
+
+```powershell
+python -m mcp_server.server
 ```
 
-### 5. Force re-download
-```bash
-python run_ingestion.py --overwrite
+Run the test suite with:
+
+```powershell
+.\venv\Scripts\pytest.exe tests -v
 ```
 
----
+For offline development and testing, use the deterministic mock judge:
 
-## Target Companies (Week 1)
+```env
+LLM_PROVIDER=mock
+MOCK_LLM=true
+```
 
-| Company | BSE Code | NSE Ticker | Sector |
-|---|---|---|---|
-| Reliance Industries | 500325 | RELIANCE | Conglomerate |
-| Infosys | 500209 | INFY | IT Services |
-| HDFC Bank | 500180 | HDFCBANK | Banking |
-| TCS | 532540 | TCS | IT Services |
-| Wipro | 507685 | WIPRO | IT Services |
-
-Target quarters: **Q1FY23 → Q4FY24** (8 quarters per company)
-
----
+For live LLM adjudication, set `LLM_PROVIDER` to `openai` or `anthropic` and provide the corresponding API key.
 
 ## Tech Stack
 
-| Component | Tool |
+| Layer | Technologies |
 |---|---|
-| PDF parsing | PyMuPDF (`fitz`) |
-| Web scraping | `requests` + `BeautifulSoup` |
-| Speaker diarization | Regex + spaCy NER |
-| Sentence embedding | FinancialBERT (FAISS) |
-| NLI model | DeBERTa-v3 cross-encoder |
-| Sentiment | `ProsusAI/finbert` |
-| Storage | SQLite + DuckDB |
-| Dashboard | Streamlit + Plotly |
+| Language | Python |
+| Data ingestion | Requests, Beautiful Soup, lxml, PyMuPDF |
+| NLP and ML | DeBERTa, FinBERT, sentence-transformers, spaCy, PyTorch |
+| Semantic search | FAISS |
+| Workflow orchestration | LangGraph, Pydantic |
+| LLM adjudication | OpenAI or Anthropic, with deterministic mock and safe fallback modes |
+| Storage | SQLite, LangGraph SQLite checkpointer, DuckDB |
+| Dashboard | Streamlit, Plotly, pandas |
+| AI interoperability | Model Context Protocol Python SDK, stdio transport |
+| Testing | pytest |
 
----
+## Use Case
 
-## Build Milestones
+**Live demo:** [contraguard.streamlit.app](https://contraguard.streamlit.app/)
 
-| Week | Deliverable | Status |
-|---|---|---|
-| 1 | Scraper working, 5 companies, 8 quarters of transcripts | ✅ |
-| 2 | Speaker diarization + statement extractor + classifier | ✅ |
-| 3 | FAISS index + NLI contradiction scorer | ✅ |
-| 4 | Soft contradiction detector + hedge escalation + omission detection | ✅ |
-| 5 | Credibility scorer: prediction extraction + penalty model + accuracy score | ✅ |
-| 6 | Streamlit dashboard: timeline + scorecard + search + PDF export | ✅ |
+An analyst reviewing a company's quarterly performance can use ContraGuard to:
 
----
+1. Search historical guidance from a specific executive or company.
+2. Compare related statements across quarters using semantic search.
+3. Inspect detected hard, soft, and omission contradictions with supporting evidence.
+4. Review ambiguous hard-contradiction candidates before any penalty is applied.
+5. Compare numerical forecasts with reported financial actuals.
+6. Track executive credibility scores and communication patterns over time.
 
-## Database Schema
-
-Five tables: `companies → executives → statements → contradictions → predictions`
-
-SQLite for reads/writes · DuckDB for cross-quarter analytics queries.
-
----
-
-## Recruiter Pitch
-
-*"I built a system that tracks forward guidance contradictions in earnings calls — detecting both hard logical contradictions and soft sentiment reversals using NLI + hedge escalation scoring, then scoring executive credibility by comparing what was promised vs what was delivered across 8 quarters."*
-
----
-
-## Running Instructions
-
-Ensure your virtual environment is activated before running the scripts:
-```powershell
-.\venv\Scripts\activate
-```
-
-### Week 1: Data Ingestion
-This step downloads all earnings call PDFs from BSE India and financial metrics from Screener.in, then saves the raw text into the SQLite database.
-```powershell
-python run_ingestion.py
-```
-*(Tip: Use `python run_ingestion.py --help` for options like running a single company)*
-
-### Week 2: Extraction Layer
-This step processes the raw transcript text. It diarizes the text by speaker, extracts sentences, and uses FinBERT and regex rules to classify guidance types and sentiment.
-```powershell
-python run_extraction.py
-```
-*(Tip: Use `python run_extraction.py --limit 2` to test the pipeline on a subset of transcripts)*
-
-### Week 3: Contradiction Engine Foundation
-This step computes vector embeddings for all statements in the database and runs semantic similarity searches or NLI verification test cases.
-
-#### 1. Backfill Statement Embeddings
-Compute and store 768-dimensional embeddings for all extracted statements in the SQLite database:
-```powershell
-python run_contradiction.py --backfill
-```
-
-#### 2. Run Verification Test Cases
-Verify the NLI DeBERTa scorer on standard logical contradiction, sentiment flip, hedge escalation, and entailment pairs:
-```powershell
-python run_contradiction.py --test-cases
-```
-
-#### 3. Semantic Search Query
-Search an executive's statements semantically using their dynamically constructed FAISS index:
-```powershell
-python run_contradiction.py --exec-id <executive_id> --query "<query_text>"
-```
-*(Example: `python run_contradiction.py --exec-id 1 --query "growth"`)*
-
----
-
-### Week 4: Full Contradiction Detection Pipeline
-This step runs the complete Milestone 4 pipeline — scanning every executive's statements for HARD, SOFT, and OMISSION contradictions and storing all results in the `contradictions` table.
-
-#### 1. Run the Full Pipeline (All Executives)
-Scans all executives for all three contradiction types:
-```powershell
-python run_contradiction.py --run-pipeline
-```
-
-#### 2. Run Pipeline for a Single Executive (Faster — for Testing)
-```powershell
-python run_contradiction.py --run-pipeline --filter-exec <executive_id>
-```
-*(Example: `python run_contradiction.py --run-pipeline --filter-exec 1`)*
-
-#### 3. Inspect Detected Contradictions
-Verify results directly in the database:
-```powershell
-python -c "import sqlite3; conn = sqlite3.connect('data/tracker.db'); print(conn.execute('SELECT contradiction_type, COUNT(*) FROM contradictions GROUP BY contradiction_type').fetchall())"
-```
-
-#### What gets detected:
-| Type | Signal | Example |
-|---|---|---|
-| **HARD** | NLI contradiction prob > 0.5 | "18% growth" → "revised to 8%" |
-| **SOFT** | Topic sim + sentiment flip + hedge escalation > 0.6 | "confident margins" → "headwinds suppressing margins" |
-| **OMISSION** | Topic absent after 3+ consecutive quarters of mentions | "rural segment" discussed Q1–Q3, never mentioned in Q4 |
-
----
-
-### Week 5: Credibility Scorer
-This step extracts numeric predictions from guidance statements, stores them in the `predictions` table, and computes a composite credibility score per executive.
-
-#### 1. Extract Predictions from Guidance Statements
-Scans all `QUANTITATIVE_GUIDANCE` statements for numeric predictions (%, INR values, BPS) and populates the `predictions` table:
-```powershell
-python run_credibility.py --extract-predictions
-```
-*(Tip: Limit to one executive with `--exec-id <ID>` for faster testing)*
-
-#### 2. Score All Executives
-Compute and print the full credibility report across all executives:
-```powershell
-python run_credibility.py --score
-```
-
-#### 3. Score a Single Executive
-```powershell
-python run_credibility.py --score --exec-id 1
-```
-
-#### 4. List All Extracted Predictions
-Inspect what predictions were extracted and which have been verified:
-```powershell
-python run_credibility.py --list-predictions
-```
-
-#### 5. Verify a Prediction (Record Actual Outcome)
-Once an actual financial result is known, record it against the prediction:
-```powershell
-python run_credibility.py --verify --pred-id <PREDICTION_ID> --actual <ACTUAL_VALUE>
-```
-*(Example: `python run_credibility.py --verify --pred-id 3 --actual 14.5`)*
-
-#### 6. Export as JSON
-```powershell
-python run_credibility.py --score --json
-```
-
-#### How the credibility score is calculated:
-| Signal | Weight | Description |
-|---|---|---|
-| **HARD contradiction** | −20 per | Direct logical reversal detected by NLI |
-| **SOFT contradiction** | −10 per | Sentiment/hedge reversal detected |
-| **OMISSION contradiction** | −5 per | Topic dropped after 3+ quarters |
-| **Correct prediction** | +10 per | Direction of actual outcome matched prediction |
-| **Wrong prediction** | −10 per | Direction of actual outcome missed |
-| **Base score** | 100 | Starting point, clamped to [0, 100] |
-
----
-
-### Week 6: Interactive Dashboard
-This step starts the premium Streamlit interactive dashboard, allowing you to browse executive scorecards, view contradiction timelines side-by-side, perform real-time semantic search over statement embeddings via FAISS, and verify numeric predictions.
-
-#### Start the Dashboard
-```powershell
-streamlit run dashboard/app.py
-```
-After running, the dashboard will open automatically in your browser at `http://localhost:8501`.
+ContraGuard is useful for equity research, due diligence, corporate governance, risk monitoring, and any workflow that requires evidence-backed evaluation of management consistency.

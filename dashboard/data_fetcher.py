@@ -231,3 +231,116 @@ def verify_prediction(pred_id: int, actual_value: float) -> None:
     update_prediction_actual(pred_id, actual_value, verified=1)
     # Invalidate all caches so the UI refreshes
     st.cache_data.clear()
+
+
+@st.cache_data(ttl=10)
+def fetch_pending_reviews() -> pd.DataFrame:
+    """Fetch pending review candidates for the Streamlit Review Queue UI."""
+    from orchestration.service import list_pending_reviews
+    items = list_pending_reviews()
+    if not items:
+        return pd.DataFrame()
+    return pd.DataFrame(items)
+
+
+@st.cache_data(ttl=10)
+def fetch_review_history() -> pd.DataFrame:
+    """Fetch historical review decisions (APPROVED, REJECTED, LEGACY_APPROVED)."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+            c.id AS contradiction_id,
+            c.contradiction_type,
+            c.score,
+            c.review_status,
+            c.reviewer_name,
+            c.review_notes,
+            c.reviewed_at,
+            c.decision_source,
+            c.llm_verdict,
+            c.llm_confidence,
+            c.llm_explanation,
+            c.graph_thread_id,
+            sa.text AS statement_a_text,
+            sa.quarter AS quarter_a,
+            sb.text AS statement_b_text,
+            sb.quarter AS quarter_b,
+            e.name AS executive_name,
+            co.name AS company_name
+        FROM contradictions c
+        JOIN statements sa ON sa.id = c.statement_a_id
+        JOIN statements sb ON sb.id = c.statement_b_id
+        JOIN executives e ON e.id = sa.executive_id
+        JOIN companies co ON co.id = sa.company_id
+        WHERE c.review_status IN ('APPROVED', 'REJECTED', 'LEGACY_APPROVED')
+        ORDER BY c.reviewed_at DESC, c.id DESC
+        """
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame([dict(r) for r in rows])
+
+
+def submit_review_decision(
+    thread_id: str,
+    contradiction_id: int,
+    approved: bool,
+    reviewer_name: str = "human",
+    review_notes: str = "",
+) -> None:
+    """
+    Resume LangGraph workflow or update review status for a pending contradiction candidate.
+    Invalidates Streamlit cache upon completion.
+    """
+    from orchestration.service import resume_human_review_workflow
+    import datetime
+
+    if thread_id and thread_id.startswith("hard_"):
+        try:
+            resume_human_review_workflow(
+                thread_id=thread_id,
+                approved=approved,
+                reviewer_name=reviewer_name,
+                review_notes=review_notes,
+            )
+        except Exception:
+            # Fallback direct DB update if graph thread is uncheckpointed
+            status = "APPROVED" if approved else "REJECTED"
+            reviewed = 1 if approved else 0
+            conn = get_connection()
+            conn.execute(
+                """
+                UPDATE contradictions
+                SET review_status = ?,
+                    reviewer_name = ?,
+                    review_notes = ?,
+                    reviewed_at = ?,
+                    reviewed = ?
+                WHERE id = ?
+                """,
+                (status, reviewer_name, review_notes, datetime.datetime.now().isoformat(), reviewed, contradiction_id),
+            )
+            conn.commit()
+            conn.close()
+    else:
+        status = "APPROVED" if approved else "REJECTED"
+        reviewed = 1 if approved else 0
+        conn = get_connection()
+        conn.execute(
+            """
+            UPDATE contradictions
+            SET review_status = ?,
+                reviewer_name = ?,
+                review_notes = ?,
+                reviewed_at = ?,
+                reviewed = ?
+            WHERE id = ?
+            """,
+            (status, reviewer_name, review_notes, datetime.datetime.now().isoformat(), reviewed, contradiction_id),
+        )
+        conn.commit()
+        conn.close()
+
+    st.cache_data.clear()

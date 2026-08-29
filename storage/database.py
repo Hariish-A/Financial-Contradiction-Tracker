@@ -111,17 +111,19 @@ def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    """Create tables if they do not exist."""
+    """Create tables if they do not exist and apply migrations."""
     with get_connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
-    logger.info(f"Database initialised at {db_path}")
+    from storage.migrations import run_migrations
+    run_migrations(db_path)
+    logger.info(f"Database initialised and migrated at {db_path}")
 
 
 # ─────────────────────────────────────────────────────────────────────
 # Company helpers
 # ─────────────────────────────────────────────────────────────────────
-def upsert_company(name: str, bse_code: str, sector: str = "") -> int:
-    with get_connection() as conn:
+def upsert_company(name: str, bse_code: str, sector: str = "", db_path: Path = DB_PATH) -> int:
+    with get_connection(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO companies(name, bse_code, sector) VALUES(?,?,?)",
             (name, bse_code, sector),
@@ -132,8 +134,8 @@ def upsert_company(name: str, bse_code: str, sector: str = "") -> int:
         return row["id"]
 
 
-def get_company(bse_code: str) -> Optional[sqlite3.Row]:
-    with get_connection() as conn:
+def get_company(bse_code: str, db_path: Path = DB_PATH) -> Optional[sqlite3.Row]:
+    with get_connection(db_path) as conn:
         return conn.execute(
             "SELECT * FROM companies WHERE bse_code=?", (bse_code,)
         ).fetchone()
@@ -142,8 +144,8 @@ def get_company(bse_code: str) -> Optional[sqlite3.Row]:
 # ─────────────────────────────────────────────────────────────────────
 # Executive helpers
 # ─────────────────────────────────────────────────────────────────────
-def upsert_executive(name: str, role: str, company_id: int) -> int:
-    with get_connection() as conn:
+def upsert_executive(name: str, role: str, company_id: int, db_path: Path = DB_PATH) -> int:
+    with get_connection(db_path) as conn:
         conn.execute(
             "INSERT OR IGNORE INTO executives(name, role, company_id) VALUES(?,?,?)",
             (name, role, company_id),
@@ -165,8 +167,9 @@ def insert_transcript(
     source_url: str = "",
     pdf_path: str = "",
     raw_text: str = "",
+    db_path: Path = DB_PATH,
 ) -> int:
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO transcripts(company_id, quarter, year, source_url, pdf_path, raw_text)
                VALUES(?,?,?,?,?,?)""",
@@ -175,15 +178,15 @@ def insert_transcript(
         return cur.lastrowid
 
 
-def mark_transcript_processed(transcript_id: int) -> None:
-    with get_connection() as conn:
+def mark_transcript_processed(transcript_id: int, db_path: Path = DB_PATH) -> None:
+    with get_connection(db_path) as conn:
         conn.execute(
             "UPDATE transcripts SET processed=1 WHERE id=?", (transcript_id,)
         )
 
 
-def get_unprocessed_transcripts():
-    with get_connection() as conn:
+def get_unprocessed_transcripts(db_path: Path = DB_PATH):
+    with get_connection(db_path) as conn:
         return conn.execute(
             "SELECT * FROM transcripts WHERE processed=0"
         ).fetchall()
@@ -203,9 +206,10 @@ def insert_statement(
     sentiment: str = "",
     sentiment_score: float = 0.0,
     embedding: Optional[np.ndarray] = None,
+    db_path: Path = DB_PATH,
 ) -> int:
     emb_blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO statements
                (executive_id, company_id, transcript_id, quarter, year,
@@ -223,17 +227,17 @@ def load_embedding(blob: bytes) -> np.ndarray:
     return np.frombuffer(blob, dtype=np.float32)
 
 
-def update_statement_embedding(statement_id: int, embedding: np.ndarray) -> None:
+def update_statement_embedding(statement_id: int, embedding: np.ndarray, db_path: Path = DB_PATH) -> None:
     emb_blob = embedding.astype(np.float32).tobytes() if embedding is not None else None
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         conn.execute(
             "UPDATE statements SET embedding=? WHERE id=?",
             (emb_blob, statement_id),
         )
 
 
-def get_statements_for_executive(executive_id: int):
-    with get_connection() as conn:
+def get_statements_for_executive(executive_id: int, db_path: Path = DB_PATH):
+    with get_connection(db_path) as conn:
         return conn.execute(
             "SELECT * FROM statements WHERE executive_id=? ORDER BY year, quarter",
             (executive_id,),
@@ -249,8 +253,9 @@ def insert_contradiction(
     contradiction_type: str,
     score: float,
     details: dict,
+    db_path: Path = DB_PATH,
 ) -> int:
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO contradictions
                (statement_a_id, statement_b_id, contradiction_type, score, details)
@@ -260,8 +265,8 @@ def insert_contradiction(
         return cur.lastrowid
 
 
-def get_contradictions(contradiction_type: str = None):
-    with get_connection() as conn:
+def get_contradictions(contradiction_type: str = None, db_path: Path = DB_PATH):
+    with get_connection(db_path) as conn:
         if contradiction_type:
             return conn.execute(
                 "SELECT * FROM contradictions WHERE contradiction_type=? ORDER BY score DESC",
@@ -272,9 +277,9 @@ def get_contradictions(contradiction_type: str = None):
         ).fetchall()
 
 
-def get_all_executives():
+def get_all_executives(db_path: Path = DB_PATH):
     """Return all executives with their company name."""
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         return conn.execute(
             """
             SELECT e.id, e.name, e.role, e.company_id, c.name AS company_name
@@ -285,9 +290,9 @@ def get_all_executives():
         ).fetchall()
 
 
-def get_predictions_for_executive(executive_id: int):
+def get_predictions_for_executive(executive_id: int, db_path: Path = DB_PATH):
     """Return all predictions for an executive, ordered by quarter."""
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         return conn.execute(
             "SELECT * FROM predictions WHERE executive_id=? ORDER BY quarter",
             (executive_id,),
@@ -298,21 +303,22 @@ def update_prediction_actual(
     prediction_id: int,
     actual_value: float,
     verified: int = 1,
+    db_path: Path = DB_PATH,
 ) -> None:
     """Fill in the actual outcome for a previously stored prediction."""
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         conn.execute(
             "UPDATE predictions SET actual_value=?, verified=? WHERE id=?",
             (actual_value, verified, prediction_id),
         )
 
 
-def get_contradictions_for_executive(executive_id: int):
+def get_contradictions_for_executive(executive_id: int, db_path: Path = DB_PATH):
     """
     Return all contradictions where EITHER statement belongs to the given executive.
     Joins statements table to filter by executive_id.
     """
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         return conn.execute(
             """
             SELECT c.*
@@ -325,9 +331,9 @@ def get_contradictions_for_executive(executive_id: int):
         ).fetchall()
 
 
-def get_statement_count_for_executive(executive_id: int) -> int:
+def get_statement_count_for_executive(executive_id: int, db_path: Path = DB_PATH) -> int:
     """Return total number of statements stored for an executive."""
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         row = conn.execute(
             "SELECT COUNT(*) AS cnt FROM statements WHERE executive_id=?",
             (executive_id,),
@@ -346,8 +352,9 @@ def insert_prediction(
     predicted_value: float = None,
     direction: str = "",
     outcome_quarter: str = "",
+    db_path: Path = DB_PATH,
 ) -> int:
-    with get_connection() as conn:
+    with get_connection(db_path) as conn:
         cur = conn.execute(
             """INSERT INTO predictions
                (executive_id, statement_id, quarter, metric,
